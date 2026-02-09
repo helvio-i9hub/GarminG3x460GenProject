@@ -80,14 +80,18 @@ with open(TRACK_CSV, "w", newline="") as f_track, \
                 row = parse_gps(line)
                 if row:
                     track_writer.writerow(row)
+                    print(row)
 
             elif line.startswith("=51i"):
                 parse_sensor_map(line)
 
             elif line.startswith("=51") and not line.startswith("=51i"):
                 for r in parse_engine(line):
+                    print(r)
                     engine_writer.writerow(r)
 
+print("----------------------------------------------------------------------")
 print("✔ CSV gerados com EGT / CHT completos")
 print(" - flight_track.csv")
 print(" - engine_data.csv")
+print("----------------------------------------------------------------------")
