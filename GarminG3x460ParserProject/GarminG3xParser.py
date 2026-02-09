@@ -1,6 +1,7 @@
 import re
 import socket
-from typing import Dict, Any, Optional
+import serial
+from typing import Dict, Any, Optional, Generator
 
 
 # ============================================================
@@ -14,7 +15,7 @@ class NMEAParser:
     nmea_re = re.compile(r'^\$(?P<body>[^*]+)(\*(?P<cs>[0-9A-F]{2}))?$')
 
     # --------------------------------------------------------
-    # Utilidades básicas
+    # Utilidades
     # --------------------------------------------------------
 
     @staticmethod
@@ -27,7 +28,7 @@ class NMEAParser:
     def checksum_ok(self, sentence: str) -> bool:
         m = self.nmea_re.match(sentence.strip())
         if not m or not m.group("cs"):
-            return True  # checksum opcional
+            return True
         return int(m.group("cs"), 16) == self.calc_checksum(m.group("body"))
 
     @staticmethod
@@ -59,13 +60,13 @@ class NMEAParser:
             "checksum_ok": self.checksum_ok(sentence),
         }
 
-        # ---------------- Garmin Proprietary ----------------
+        # Garmin Proprietary
         if sid.startswith("PGRM"):
             base["protocol"] = "garmin"
             base.update(self.parse_garmin(sid, fields[1:]))
             return base
 
-        # ---------------- NMEA padrão ----------------
+        # NMEA padrão
         talker = sid[:2]
         msg = sid[2:]
 
@@ -78,7 +79,7 @@ class NMEAParser:
         return None
 
     # ========================================================
-    # Garmin Proprietary Parsers (190-00684-00 Rev. C)
+    # Garmin Proprietary (190-00684-00 Rev. C)
     # ========================================================
 
     def parse_garmin(self, sid: str, f):
@@ -95,11 +96,7 @@ class NMEAParser:
         return handlers.get(sid, lambda _: {})(f)
 
     def pgrme(self, f):
-        return {
-            "hpe_m": float(f[0]),
-            "vpe_m": float(f[2]),
-            "epe_m": float(f[4]),
-        }
+        return {"hpe_m": float(f[0]), "vpe_m": float(f[2]), "epe_m": float(f[4])}
 
     def pgrmf(self, f):
         return {
@@ -141,7 +138,7 @@ class NMEAParser:
             "stored_data": f[3],
             "rtc": f[4],
             "oscillator": f[5],
-            "collecting": f[6] if f[6] else None,
+            "collecting": f[6] or None,
             "temperature_c": float(f[7]),
             "config_data": f[8],
         }
@@ -154,10 +151,7 @@ class NMEAParser:
         }
 
     def pgrmz(self, f):
-        return {
-            "altitude_ft": int(f[0]),
-            "fix_type": int(f[2]),
-        }
+        return {"altitude_ft": int(f[0]), "fix_type": int(f[2])}
 
     def pgrmb(self, f):
         return {
@@ -176,15 +170,14 @@ class NMEAParser:
     # ========================================================
 
     def parse_standard(self, msg: str, f):
-        handlers = {
+        return {
             "RMC": self.rmc,
             "GGA": self.gga,
             "VTG": self.vtg,
             "GSA": self.gsa,
             "GSV": self.gsv,
             "GLL": self.gll,
-        }
-        return handlers.get(msg, lambda _: {})(f)
+        }.get(msg, lambda _: {})(f)
 
     def rmc(self, f):
         return {
@@ -195,7 +188,6 @@ class NMEAParser:
             "speed_knots": float(f[6]) if f[6] else None,
             "course_deg": float(f[7]) if f[7] else None,
             "date": f[8],
-            "mode": f[11] if len(f) > 11 else None,
         }
 
     def gga(self, f):
@@ -242,24 +234,54 @@ class NMEAParser:
 
 
 # ============================================================
-# Exemplo de uso: Cliente TCP (porta 3100)
+# Fontes de dados (TCP / Serial / Log)
 # ============================================================
 
-def run_tcp_client(host="127.0.0.1", port=3100):
-    parser = NMEAParser()
+def source_tcp(host: str, port: int) -> Generator[str, None, None]:
     sock = socket.create_connection((host, port))
     f = sock.makefile()
-
-    print(f"[CLIENT] Conectado em {host}:{port}")
-
     while True:
         line = f.readline()
         if not line:
             break
+        yield line.strip()
+
+
+def source_serial(port: str, baud: int = 9600) -> Generator[str, None, None]:
+    ser = serial.Serial(port, baudrate=baud, timeout=1)
+    while True:
+        line = ser.readline().decode(errors="ignore").strip()
+        if line:
+            yield line
+
+
+def source_log(path: str) -> Generator[str, None, None]:
+    with open(path, "r", errors="ignore") as f:
+        for line in f:
+            yield line.strip()
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def run(source: Generator[str, None, None]):
+    parser = NMEAParser()
+    for line in source:
         msg = parser.parse(line)
         if msg:
             print(msg)
 
 
 if __name__ == "__main__":
-    run_tcp_client()
+
+    MODE = "tcp"      # tcp | serial | log
+
+    if MODE == "tcp":
+        run(source_tcp("127.0.0.1", 3100))
+
+    elif MODE == "serial":
+        run(source_serial("/dev/ttyUSB0", 9600))
+
+    elif MODE == "log":
+        run(source_log("nmea.log"))
